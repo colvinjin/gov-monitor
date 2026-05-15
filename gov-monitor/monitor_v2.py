@@ -28,6 +28,8 @@ KEYWORDS = {
     "新兴产业/具身智能": ["具身智能", "人形机器人", "机器人", "智能机器人"],
     "新兴产业/人工智能": ["人工智能", "大模型", "生成式AI", "AI治理", "算法"],
     "新兴产业/算力": ["算力", "智算中心", "算力网络", "GPU", "算力基础设施"],
+    "品牌监测/学大教育": ["学大", "学大教育"],
+    "品牌监测/句象书店": ["句象书店", "句象"],
 }
 
 # 监测网站域名
@@ -52,7 +54,64 @@ DOMAINS = [
     "edu.sc.gov.cn",     # 四川教育厅
     "jyt.hubei.gov.cn",  # 湖北教育厅
     "jyt.hunan.gov.cn",  # 湖南教育厅
-    # 句象书店城市
+    "jyt.shandong.gov.cn", # 山东教育厅
+    "jyt.henan.gov.cn",  # 河南教育厅
+    "sjzjy.hebei.gov.cn", # 河北教育厅
+    "jyt.shaanxi.gov.cn", # 陕西教育厅
+    "jyt.fujian.gov.cn", # 福建教育厅
+    "jyt.anhui.gov.cn",  # 安徽教育厅
+    "jxjyt.jiangxi.gov.cn", # 江西教育厅
+    "jyt.yn.gov.cn",     # 云南教育厅
+    "jyt.guizhou.gov.cn", # 贵州教育厅
+    "jyt.gxzf.gov.cn",  # 广西教育厅
+    "jw.tj.gov.cn",      # 天津教委
+    "jw.cq.gov.cn",      # 重庆教委
+    "jyt.hlj.gov.cn",   # 黑龙江教育厅
+    "jyt.jl.gov.cn",    # 吉林教育厅
+    "jyt.ln.gov.cn",    # 辽宁教育厅
+    "jyt.nm.gov.cn",    # 内蒙古教育厅
+    "jyt.shanxi.gov.cn", # 山西教育厅
+    "jyt.gansu.gov.cn", # 甘肃教育厅
+    "jyt.qinghai.gov.cn", # 青海教育厅
+    "jyt.ningxia.gov.cn", # 宁夏教育厅
+    "jyt.xinjiang.gov.cn", # 新疆教育厅
+    "jyt.xizang.gov.cn", # 西藏教育厅
+    "jyt.hainan.gov.cn", # 海南教育厅
+    # 省会城市教育局
+    "jyj.wuhan.gov.cn",  # 武汉教育局
+    "jyj.guangzhou.gov.cn", # 广州教育局
+    "cdjy.chengdu.gov.cn", # 成都教育局
+    "jyj.nanjing.gov.cn", # 南京教育局
+    "jyj.hangzhou.gov.cn", # 杭州教育局
+    "jyj.jinan.gov.cn",  # 济南教育局
+    "jyj.zhengzhou.gov.cn", # 郑州教育局
+    "jyj.shijiazhuang.gov.cn", # 石家庄教育局
+    "jyj.xian.gov.cn",   # 西安教育局
+    "jyj.changsha.gov.cn", # 长沙教育局
+    "jyj.hefei.gov.cn",  # 合肥教育局
+    "jyj.nanchang.gov.cn", # 南昌教育局
+    "jyj.fuzhou.gov.cn", # 福州教育局
+    "jyj.kunming.gov.cn", # 昆明教育局
+    "jyj.guiyang.gov.cn", # 贵阳教育局
+    "jyj.nanning.gov.cn", # 南宁教育局
+    "jyj.haerbin.gov.cn", # 哈尔滨教育局
+    "jyj.changchun.gov.cn", # 长春教育局
+    "jyj.shenyang.gov.cn", # 沈阳教育局
+    "jyj.huhehaote.gov.cn", # 呼和浩特教育局
+    "jyj.taiyuan.gov.cn", # 太原教育局
+    "jyj.lanzhou.gov.cn", # 兰州教育局
+    "jyj.xining.gov.cn", # 西宁教育局
+    "jyj.yinchuan.gov.cn", # 银川教育局
+    "jyj.urumqi.gov.cn", # 乌鲁木齐教育局
+    "jyj.lasa.gov.cn",   # 拉萨教育局
+    "jyj.haikou.gov.cn", # 海口教育局
+    # 计划单列市教育局
+    "jyj.dalian.gov.cn", # 大连教育局
+    "jyj.ningbo.gov.cn", # 宁波教育局
+    "jyj.xiamen.gov.cn", # 厦门教育局
+    "jyj.shenzhen.gov.cn", # 深圳教育局（已有文旅，补教育）
+    "jyj.qingdao.gov.cn", # 青岛教育局
+    # 句象书店城市文旅/宣传
     "bjwmb.gov.cn",      # 北京宣传部
     "whlyj.beijing.gov.cn", # 北京文旅
     "shxc.gov.cn",       # 上海宣传部
