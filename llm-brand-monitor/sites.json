@@ -1,0 +1,86 @@
+{
+  "_comment": "网页版站点配置。selectors 为初始猜测，各家前端改版频繁，首次使用请跑 `python browser_channel.py --probe <key>` 校准，校准后把 verified 改为 true。",
+  "sites": [
+    {
+      "key": "doubao",
+      "label": "豆包",
+      "url": "https://www.doubao.com/chat/",
+      "input_selectors": ["textarea[data-testid='chat_input_input']", "div[contenteditable='true']", "textarea"],
+      "send_selectors": ["button[data-testid='chat_input_send_button']", "#flow-end-msg-send"],
+      "response_selector": "[data-testid='message_text_content']",
+      "boot_ms": 3000,
+      "verified": false
+    },
+    {
+      "key": "yuanbao",
+      "label": "腾讯元宝",
+      "url": "https://yuanbao.tencent.com/chat/",
+      "input_selectors": ["div.ql-editor[contenteditable='true']", "div[contenteditable='true']", "textarea"],
+      "send_selectors": ["a.style__send-btn___ZsLgg", "button[type='submit']"],
+      "response_selector": ".agent-chat__bubble__content",
+      "boot_ms": 3000,
+      "verified": false
+    },
+    {
+      "key": "tongyi",
+      "label": "通义千问",
+      "url": "https://www.tongyi.com/qianwen/",
+      "input_selectors": ["textarea.ant-input", "div[contenteditable='true']", "textarea"],
+      "send_selectors": ["div[class*='operateBtn']", "button[type='submit']"],
+      "response_selector": "div[class*='answerItem']",
+      "boot_ms": 3000,
+      "verified": false
+    },
+    {
+      "key": "kimi",
+      "label": "Kimi",
+      "url": "https://www.kimi.com/",
+      "input_selectors": ["div[data-testid='msh-chatinput-editor']", "div[contenteditable='true']", "textarea"],
+      "send_selectors": ["div[data-testid='msh-chatinput-send-button']", "button[type='submit']"],
+      "response_selector": "div[class*='segment-assistant']",
+      "boot_ms": 3000,
+      "verified": false
+    },
+    {
+      "key": "deepseek",
+      "label": "DeepSeek",
+      "url": "https://chat.deepseek.com/",
+      "input_selectors": ["textarea#chat-input", "textarea"],
+      "send_selectors": ["div[role='button'][aria-disabled='false']"],
+      "response_selector": "div[class*='ds-markdown']",
+      "boot_ms": 3000,
+      "note": "联网需在输入框上方手动打开「联网搜索」开关，首次登录后开一次即可记住",
+      "verified": false
+    },
+    {
+      "key": "yiyan",
+      "label": "文心一言",
+      "url": "https://yiyan.baidu.com/",
+      "input_selectors": ["div[contenteditable='true']", "textarea"],
+      "send_selectors": ["span[class*='send']", "button[type='submit']"],
+      "response_selector": "div[class*='answer']",
+      "boot_ms": 3500,
+      "verified": false
+    },
+    {
+      "key": "chatglm",
+      "label": "智谱清言",
+      "url": "https://chatglm.cn/main/alltoolsdetail",
+      "input_selectors": ["textarea", "div[contenteditable='true']"],
+      "send_selectors": ["div[class*='enter']", "button[type='submit']"],
+      "response_selector": "div[class*='answer-content']",
+      "boot_ms": 3000,
+      "verified": false
+    },
+    {
+      "key": "xinghuo",
+      "label": "讯飞星火",
+      "url": "https://xinghuo.xfyun.cn/desk",
+      "input_selectors": ["textarea", "div[contenteditable='true']"],
+      "send_selectors": ["div[class*='send']", "button[type='submit']"],
+      "response_selector": "div[class*='text-container']",
+      "boot_ms": 3500,
+      "verified": false
+    }
+  ]
+}

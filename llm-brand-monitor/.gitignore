@@ -1,6 +1,8 @@
 .env
 __pycache__/
 *.pyc
+# 浏览器登录态，含账号凭据，绝不入库
+.browser-profile/
 # 采集产物与报表按日生成，不入库（含模型回答全文，体积大且可复现）
 data/
 reports/

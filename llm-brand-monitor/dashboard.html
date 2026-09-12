@@ -37,6 +37,11 @@
   .risk{border-left:3px solid var(--warn);padding:8px 12px;margin:8px 0;background:#fffbeb;
         border-radius:0 8px 8px 0;font-size:13px;line-height:1.6}
   .zero{color:var(--neg);font-weight:600}
+  .badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;
+         background:#eef4ff;color:#1d4ed8;border:1px solid #dbe6ff}
+  .badge.api{background:#f5f5f5;color:#555;border-color:#e5e5e5}
+  .gap{font-variant-numeric:tabular-nums;font-weight:600}
+  .gap.up{color:var(--pos)} .gap.down{color:var(--neg)}
   .scroll{overflow-x:auto}
   .empty{color:var(--muted);font-size:13px}
   footer{margin-top:32px;color:var(--muted);font-size:12px;line-height:1.8}
@@ -102,15 +107,56 @@ function lineChart(history) {
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${grid}${lines}${labels}</svg></div>`;
 }
 
+function comparison(c) {
+  if (!c) return `<div class="card empty">当天只采集了一种口径。想看联网带来多少增量，
+    再跑一次 <code>python monitor.py --mode api</code> 作为对照组。</div>`;
+  const g = c.mention_gap, cls = g >= 0 ? 'up' : 'down';
+  return `<div class="card scroll"><table>
+    <thead><tr><th>口径</th><th class="num">提及率</th><th class="num">首位率</th>
+      <th class="num">平均排名</th><th class="num">可见度指数</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge">网页版/App（联网）</span></td>
+        <td class="num">${pct(c.web.mention_rate)}</td>
+        <td class="num">${pct(c.web.first_rate_in_mentioned)}</td>
+        <td class="num">${num(c.web.avg_rank)}</td>
+        <td class="num">${c.web.visibility_index}</td></tr>
+      <tr><td><span class="badge api">纯模型（不联网）</span></td>
+        <td class="num">${pct(c.api.mention_rate)}</td>
+        <td class="num">${pct(c.api.first_rate_in_mentioned)}</td>
+        <td class="num">${num(c.api.avg_rank)}</td>
+        <td class="num">${c.api.visibility_index}</td></tr>
+    </tbody></table>
+    <div class="sub" style="margin-top:10px;font-size:13px">
+      提及率差 <span class="gap ${cls}">${(g * 100 >= 0 ? '+' : '') + (g * 100).toFixed(1)}pt</span>，
+      可见度指数差 <span class="gap ${cls}">${(c.index_gap >= 0 ? '+' : '') + c.index_gap}</span>。
+      差值为正 = 联网检索给学大加了分（检索语料里有学大）；为负 = 检索把竞品带了上来。
+    </div></div>`;
+}
+
+function channelTable(rows) {
+  if (!rows || rows.length < 2) return '';
+  return `<h2>分采集通道 <small>接口与网页版/App 的差值就是校准系数</small></h2>
+    <div class="card scroll"><table>
+    <thead><tr><th>通道</th><th class="num">回答数</th><th class="num">提及率</th>
+      <th class="num">首位率</th><th class="num">正面率</th><th class="num">可见度指数</th></tr></thead>
+    <tbody>${rows.map(r => `<tr><td>${esc(r.channel_label)}</td>
+      <td class="num">${r.ok}</td><td class="num">${pct(r.mention_rate)}</td>
+      <td class="num">${pct(r.first_rate_in_mentioned)}</td>
+      <td class="num">${pct(r.positive_rate)}</td>
+      <td class="num">${r.visibility_index}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
 function providerTable(rows) {
   if (!rows.length) return '';
   const max = Math.max(...rows.map(r => r.visibility_index), 1);
   return `<div class="card scroll"><table>
-    <thead><tr><th>模型</th><th class="num">可见度指数</th><th></th>
+    <thead><tr><th>模型</th><th>通道</th><th class="num">可见度指数</th><th></th>
       <th class="num">提及率</th><th class="num">首位率</th><th class="num">平均排名</th>
       <th class="num">正面率</th><th class="num">失败</th></tr></thead><tbody>
     ${rows.map(r => `<tr>
       <td>${esc(r.provider_label)}<br><span class="meta">${esc(r.model)}</span></td>
+      <td>${({api:'接口',browser:'网页版',manual:'App人工'})[r.channel] || '-'}</td>
       <td class="num">${r.visibility_index}</td>
       <td style="width:130px"><span class="bar self" style="width:${(r.visibility_index / max * 110).toFixed(0)}px"></span></td>
       <td class="num">${pct(r.mention_rate)}</td>
@@ -164,9 +210,13 @@ fetch('web_data.json?' + Date.now())
   .then(r => r.json())
   .then(d => {
     document.getElementById('meta').textContent =
-      `${d.date}｜生成于 ${d.generatedAt}｜有效回答 ${d.overall.ok}/${d.overall.calls} 条｜模型 ${d.providers.length} 个`;
+      `${d.date}｜生成于 ${d.generatedAt}｜有效回答 ${d.overall.ok}/${d.overall.calls} 条｜模型 ${d.providers.length} 个`
+      + `｜基线口径：${d.baselineMode === 'web' ? '网页版/App（联网）' : '纯模型（不联网）'}`;
     document.getElementById('app').innerHTML = [
       kpiCards(d.overall),
+      '<h2>联网 vs 不联网 <small>真实用户走网页版/App，以联网口径为基线</small></h2>',
+      comparison(d.comparison),
+      channelTable(d.channels),
       '<h2>趋势 <small>近 14 天</small></h2>', lineChart(d.history || []),
       '<h2>分模型表现</h2>', providerTable(d.providers),
       '<h2>竞品声量份额 SOV <small>品类 + 对比类问题</small></h2>', sovChart(d.sov),

@@ -95,7 +95,13 @@ class Provider:
     default_model: str
     api_key_env: str
     note: str = ""
-    extra_body: Dict = field(default_factory=dict)   # 如联网搜索开关
+    extra_body: Dict = field(default_factory=dict)    # 两种模式都带上的参数
+    # 联网检索（mode=web）时额外加的请求参数。各家字段不同，且会随版本变动，
+    # 以各自最新文档为准，需要调整时改这里即可。
+    search_body: Dict = field(default_factory=dict)
+    supports_api_search: bool = False          # 接口层能否开检索
+    search_note: str = ""                      # 不能开时的说明
+    chat_path: str = "/chat/completions"
     timeout: float = 180.0
 
     @property
@@ -111,6 +117,32 @@ class Provider:
     def available(self) -> bool:
         return bool(self.api_key)
 
+    def resolve(self, mode: str = "web") -> Dict:
+        """按模式解析出本次调用要用的 model / url / 额外参数。
+
+        豆包的联网能力挂在方舟"应用(Bot)"上而不是裸模型上：配了 ARK_BOT_ID
+        就自动切到 /bots/chat/completions 并以 Bot ID 作为 model。
+        """
+        model, path = self.model, self.chat_path
+        body = dict(self.extra_body)
+        searching = False
+
+        if mode == "web":
+            if self.key == "doubao" and os.getenv("ARK_BOT_ID", "").strip():
+                model = os.getenv("ARK_BOT_ID").strip()
+                path = "/bots/chat/completions"
+                searching = True
+            elif self.supports_api_search:
+                body.update(self.search_body)
+                searching = True
+
+        return {
+            "model": model,
+            "url": f"{self.base_url.rstrip('/')}{path}",
+            "body": body,
+            "search_requested": searching,
+        }
+
 
 PROVIDERS: List[Provider] = [
     Provider(
@@ -119,44 +151,54 @@ PROVIDERS: List[Provider] = [
         default_model="doubao-pro-32k",
         api_key_env="ARK_API_KEY",
         note="模型名需填方舟上的接入点 ID 或模型名",
+        search_note="联网需在方舟创建带联网插件的应用(Bot)，把 Bot ID 填到 ARK_BOT_ID",
     ),
     Provider(
         key="qwen", label="通义千问(阿里)",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         default_model="qwen-plus",
         api_key_env="DASHSCOPE_API_KEY",
-        note="extra_body 里可开 enable_search 模拟联网版",
-        extra_body={"enable_search": False},
+        search_body={"enable_search": True},
+        supports_api_search=True,
     ),
     Provider(
         key="deepseek", label="DeepSeek",
         base_url="https://api.deepseek.com/v1",
         default_model="deepseek-chat",
         api_key_env="DEEPSEEK_API_KEY",
+        search_note="开放接口不提供联网检索，网页版的联网结果请走 browser/manual 通道",
     ),
     Provider(
         key="glm", label="智谱 GLM",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         default_model="glm-4-plus",
         api_key_env="ZHIPU_API_KEY",
+        search_body={"tools": [{"type": "web_search",
+                                "web_search": {"enable": True, "search_result": True}}]},
+        supports_api_search=True,
     ),
     Provider(
         key="kimi", label="Kimi(月之暗面)",
         base_url="https://api.moonshot.cn/v1",
         default_model="moonshot-v1-8k",
         api_key_env="MOONSHOT_API_KEY",
+        search_note="联网是 builtin_function($web_search)，需要工具调用回传，本工具未实现；请走 browser/manual 通道",
     ),
     Provider(
         key="ernie", label="文心一言(百度千帆)",
         base_url="https://qianfan.baidubce.com/v2",
         default_model="ernie-4.5-turbo-128k",
         api_key_env="QIANFAN_API_KEY",
+        search_body={"web_search": {"enable": True, "enable_citation": True}},
+        supports_api_search=True,
     ),
     Provider(
         key="hunyuan", label="腾讯混元",
         base_url="https://api.hunyuan.cloud.tencent.com/v1",
         default_model="hunyuan-turbos-latest",
         api_key_env="HUNYUAN_API_KEY",
+        search_body={"enable_enhancement": True, "citation": True},
+        supports_api_search=True,
     ),
     Provider(
         key="spark", label="讯飞星火",
@@ -164,18 +206,24 @@ PROVIDERS: List[Provider] = [
         default_model="4.0Ultra",
         api_key_env="SPARK_API_KEY",
         note="APIKey:APISecret 形式的 key 直接整体填入",
+        search_body={"tools": [{"type": "web_search",
+                                "web_search": {"enable": True, "show_ref_label": True}}]},
+        supports_api_search=True,
     ),
     Provider(
         key="minimax", label="MiniMax",
         base_url="https://api.minimax.chat/v1",
         default_model="abab6.5s-chat",
         api_key_env="MINIMAX_API_KEY",
+        search_note="联网需配置 plugins/web_search，字段随版本变动，建议走 browser/manual 通道",
     ),
     Provider(
         key="baichuan", label="百川",
         base_url="https://api.baichuan-ai.com/v1",
         default_model="Baichuan4-Turbo",
         api_key_env="BAICHUAN_API_KEY",
+        search_body={"with_search_enhance": True},
+        supports_api_search=True,
     ),
 ]
 
@@ -206,6 +254,18 @@ def pick_judge() -> Provider:
 # ============================================================
 # 3. 采集参数与指标口径
 # ============================================================
+
+# 采集模式：
+#   web = 尽量贴近网页版/App（开启各家联网检索），**默认**，因为真实用户走的是这条路
+#   api = 纯模型能力（不联网），用于对照，看提及率里有多少来自检索语料
+# 两种模式的数据不能混着比，报表会分开统计并标注。
+DEFAULT_MODE = os.getenv("MONITOR_MODE", "web")
+
+# 浏览器通道（问网页版）配置
+BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", ".browser-profile")
+BROWSER_PACING_SECONDS = float(os.getenv("BROWSER_PACING_SECONDS", "8"))   # 每题之间的间隔，别调太小
+BROWSER_STABLE_MS = int(os.getenv("BROWSER_STABLE_MS", "2500"))            # 回答多久不变算生成完毕
+BROWSER_TIMEOUT_S = float(os.getenv("BROWSER_TIMEOUT_S", "120"))
 
 # 每个问题在每个模型上重复采样次数（抵消生成随机性，建议 >=3）
 REPEATS = int(os.getenv("MONITOR_REPEATS", "3"))

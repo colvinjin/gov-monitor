@@ -8,9 +8,17 @@
 原始结果写入 data/raw/YYYY-MM-DD.jsonl（每行一条回答，保留全文便于复核），
 指标聚合交给 report.py。
 
+模式（重要）：
+    --mode web  默认。尽量开启各家的联网检索，贴近用户真实使用的网页版/App。
+    --mode api  纯模型能力，不联网，用于对照。
+真实用户走的是网页版和 App，所以基线用 web 模式；两种模式的数据不能混着比。
+接口层开不了联网的模型（DeepSeek / Kimi / MiniMax），用 browser_channel.py
+或 import_manual.py 采集网页版结果。
+
 用法：
     python monitor.py --dry-run                 # 不用 API Key，跑通全流程
-    python monitor.py                           # 跑全部已配置模型 × 全部问题
+    python monitor.py                           # web 模式跑全部已配置模型
+    python monitor.py --mode api                # 对照组
     python monitor.py --providers doubao,qwen --types category --repeats 3
     python monitor.py --limit 5 --no-judge      # 快速冒烟
 """
@@ -18,15 +26,14 @@
 import argparse
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
 import config
-from config import BRAND, COMPETITORS, all_brands
-from extractor import context_of, find_mentions, rank_brands
-from judge import Verdict, judge_context, rule_verdict
 from llm_client import MOCK_PROVIDER, LLMClient
+from pipeline import build_record, console_line
 from questions import Question, select
 
 ROOT = Path(__file__).parent
@@ -49,76 +56,20 @@ def resolve_providers(spec: str, dry_run: bool) -> List[config.Provider]:
     return providers
 
 
-def analyze(answer: str) -> Dict:
-    """对一条回答做提及 / 排名 / 竞品解析。"""
-    brand_mentions = find_mentions(answer, BRAND)
-    rank_result = rank_brands(answer, all_brands())
-    brand_rank = rank_result.ranks.get(BRAND.name)
-
-    competitors = {}
-    for c in COMPETITORS:
-        if c.name in rank_result.ranks:
-            competitors[c.name] = rank_result.ranks[c.name]
-
-    return {
-        "brand": {
-            "mentioned": bool(brand_mentions),
-            "count": len(brand_mentions),
-            "rank": brand_rank,
-            "is_first": brand_rank == 1,
-            "aliases_hit": sorted({m.alias for m in brand_mentions}),
-        },
-        "rank_method": rank_result.method,
-        "list_size": rank_result.list_size,
-        "competitors": competitors,
-        "context": context_of(answer, brand_mentions),
-    }
-
-
 async def run_one(client: LLMClient, provider: config.Provider, question: Question,
-                  repeat: int, judge_provider, use_judge: bool) -> Dict:
-    result = await client.chat(provider, question.text)
+                  repeat: int, mode: str, judge_provider, use_judge: bool) -> Dict:
+    result = await client.chat(provider, question.text, mode=mode)
 
-    record = {
-        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "provider": provider.key,
-        "provider_label": provider.label,
-        "model": result.model or provider.model,
-        "question_id": question.id,
-        "question": question.text,
-        "type": question.type,
-        "scene": question.scene,
-        "repeat": repeat,
-        "ok": result.ok,
-        "error": result.error,
-        "latency_ms": result.latency_ms,
-        "answer": result.text,
-    }
-
-    if not result.ok:
-        record.update({"brand": {"mentioned": False, "count": 0, "rank": None,
-                                 "is_first": False, "aliases_hit": []},
-                       "competitors": {}, "sentiment": Verdict().to_dict()})
-        return record
-
-    record.update(analyze(result.text))
-
-    ctx = record.pop("context", "")
-    if record["brand"]["mentioned"]:
-        if use_judge and judge_provider is not None:
-            verdict = await judge_context(client, judge_provider, BRAND.name, ctx)
-        else:
-            verdict = rule_verdict(ctx)
-    else:
-        verdict = Verdict()          # 未提及则不参与情感统计
-    record["sentiment"] = verdict.to_dict()
-    record["brand_context"] = ctx[:800]
-
-    flag = "🎯" if record["brand"]["is_first"] else ("✅" if record["brand"]["mentioned"] else "➖")
-    rank_txt = f"第{record['brand']['rank']}位" if record["brand"]["rank"] else "未进清单"
-    print(f"  {flag} [{provider.key}] {question.id} #{repeat} "
-          f"{rank_txt} / {verdict.sentiment}({verdict.score})")
+    record = await build_record(
+        question=question, answer=result.text,
+        provider_key=provider.key, provider_label=provider.label,
+        model=result.model or provider.model, repeat=repeat,
+        channel="api", mode=mode,
+        ok=result.ok, error=result.error, latency_ms=result.latency_ms,
+        client=client, judge_provider=judge_provider, use_judge=use_judge,
+        search_evidence=result.search_evidence, citations=result.citations,
+    )
+    print(console_line(record))
     return record
 
 
@@ -141,19 +92,32 @@ async def run(args) -> List[Dict]:
             use_judge = False
 
     total = len(providers) * len(questions) * args.repeats
+    mode_desc = "web（开联网检索，贴近网页版/App）" if args.mode == "web" else "api（纯模型，不联网）"
     print(f"\n{'='*64}")
     print(f"🚀 学大教育 · 大模型可见度监测  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"   采集模式: {mode_desc}")
     print(f"   模型 {len(providers)} 个: {', '.join(p.label for p in providers)}")
     print(f"   问题 {len(questions)} 个 × 重复 {args.repeats} 次 = {total} 次调用")
     print(f"   情感裁判: {judge_provider.label if judge_provider else '词典法'}")
     print(f"{'='*64}\n")
+
+    if args.mode == "web":
+        no_search = [p for p in providers
+                     if not p.supports_api_search and p.key not in ("mock",)
+                     and not (p.key == "doubao" and os.getenv("ARK_BOT_ID", "").strip())]
+        if no_search:
+            print("⚠️  以下模型接口层开不了联网检索，结果会低估网页版/App 表现：")
+            for p in no_search:
+                print(f"     · {p.label}：{p.search_note or '暂不支持'}")
+            print("   建议对这几家改用 browser_channel.py 或 import_manual.py。\n")
 
     tasks = []
     async with LLMClient(concurrency=args.concurrency) as client:
         for provider in providers:
             for q in questions:
                 for r in range(1, args.repeats + 1):
-                    tasks.append(run_one(client, provider, q, r, judge_provider, use_judge))
+                    tasks.append(run_one(client, provider, q, r, args.mode,
+                                         judge_provider, use_judge))
         records = await asyncio.gather(*tasks)
 
     return list(records)
@@ -181,8 +145,11 @@ def quick_summary(records: List[Dict]):
     judged = [r for r in ok if r["brand"]["mentioned"]]
     positive = [r for r in judged if r["sentiment"]["sentiment"] == "正面"]
 
+    with_cite = [r for r in ok if r.get("search_evidence")]
     print("\n📊 本次快照（完整报表请运行 report.py）")
     print(f"  有效回答      : {len(ok)}/{len(records)}")
+    if records and records[0].get("mode") == "web":
+        print(f"  联网实际生效   : {len(with_cite)}/{len(ok)}（响应里带回检索引用的比例）")
     if cat:
         print(f"  提及率(品类问) : {len(mentioned)}/{len(cat)} = {len(mentioned)/len(cat):.1%}")
     if mentioned:
@@ -193,6 +160,8 @@ def quick_summary(records: List[Dict]):
 
 def main():
     parser = argparse.ArgumentParser(description="学大教育大模型可见度监测")
+    parser.add_argument("--mode", default=config.DEFAULT_MODE, choices=["web", "api"],
+                        help="web=开联网检索贴近网页版/App（默认）；api=纯模型对照")
     parser.add_argument("--providers", default="all", help="逗号分隔的模型标识，默认全部已配置模型")
     parser.add_argument("--types", default="", help="问题类型过滤: category,brand,compare")
     parser.add_argument("--repeats", type=int, default=config.REPEATS, help="每题重复采样次数")

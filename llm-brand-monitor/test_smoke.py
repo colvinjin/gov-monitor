@@ -162,6 +162,60 @@ nothing = [rec(False, None, 0.0) for _ in range(4)]
 check("全未提及时指数为 0", metrics_for(nothing)["visibility_index"] == 0.0,
       f"actual={metrics_for(nothing)['visibility_index']}")
 
+# ---------- 6. 采集通道与口径 ----------
+print("\n[6] 采集通道与口径")
+
+import asyncio
+from pathlib import Path
+from config import get_provider
+from pipeline import build_record
+from questions import QUESTIONS
+from report import channel_rows, split_by_mode
+
+q = QUESTIONS[0]
+answer = "推荐几家：\n\n1. 学大教育：个性化一对一，全职教师。\n2. 新东方：网点多。\n"
+r_web = asyncio.run(build_record(question=q, answer=answer, provider_key="doubao",
+                                 provider_label="豆包", model="m", repeat=1,
+                                 channel="api", mode="web", search_evidence=True, citations=3))
+check("记录带 channel/mode", r_web["channel"] == "api" and r_web["mode"] == "web")
+check("记录带联网证据", r_web["search_evidence"] and r_web["citations"] == 3)
+check("通道记录仍走同一套解析", r_web["brand"]["is_first"] and r_web["brand"]["rank"] == 1)
+
+r_fail = asyncio.run(build_record(question=q, answer="", provider_key="x", provider_label="X",
+                                  model="m", repeat=1, channel="browser", mode="web",
+                                  ok=False, error="超时"))
+check("失败记录结构完整", r_fail["brand"]["mentioned"] is False and r_fail["sentiment"]["score"] == 0.0)
+
+mixed = [dict(rec(True, 1, 0.5), mode="web", channel="api"),
+         dict(rec(True, 2, 0.5), mode="api", channel="api"),
+         dict(rec(True, 1, 0.5), mode="web", channel="manual")]
+by_mode = split_by_mode(mixed)
+check("按模式拆分正确", len(by_mode["web"]) == 2 and len(by_mode["api"]) == 1,
+      f"actual={ {k: len(v) for k, v in by_mode.items()} }")
+chs = channel_rows(by_mode["web"])
+check("按通道汇总正确", [c["channel"] for c in chs] == ["api", "manual"], f"actual={chs}")
+
+# 联网开关解析
+check("通义 web 模式开检索", get_provider("qwen").resolve("web")["search_requested"])
+check("通义 api 模式不开检索", not get_provider("qwen").resolve("api")["search_requested"])
+check("DeepSeek 接口层无检索", not get_provider("deepseek").resolve("web")["search_requested"])
+check("智谱 web 模式带 tools",
+      "tools" in get_provider("glm").resolve("web")["body"])
+
+# 人工导入模板往返
+import import_manual
+tmp = Path("data/manual/_test_tpl.md")
+tmp.parent.mkdir(parents=True, exist_ok=True)
+tmp.write_text(
+    "# 采集渠道: 豆包App    渠道标识: doubao_app    日期: 2026-01-01\n"
+    "\n## cat_01 | 问题一\n\n这里是学大教育的回答，内容足够长可以被解析出来。\n"
+    "\n## cat_02 | 问题二\n\n" + import_manual.PLACEHOLDER + "\n", encoding="utf-8")
+answers, meta = import_manual.parse(tmp)
+check("模板解析出已填写的回答", list(answers) == ["cat_01"], f"actual={list(answers)}")
+check("未填写的占位被跳过", "cat_02" not in answers)
+check("解析出渠道元信息", meta.get("provider") == "doubao_app", f"actual={meta}")
+tmp.unlink()
+
 # ---------- 汇总 ----------
 print(f"\n{'='*50}")
 print(f"通过 {PASS}  失败 {FAIL}")

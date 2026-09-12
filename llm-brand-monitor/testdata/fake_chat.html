@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>Fake Chat</title></head>
+<body>
+<!-- 模拟网页版聊天界面：contenteditable 输入框 + 发送按钮 + 逐字流式输出的回答气泡。
+     用于验证 browser_channel.py 的驱动逻辑（输入→发送→等生成稳定→抓全文），
+     不依赖任何真实站点。 -->
+<div id="messages"></div>
+<div id="editor" contenteditable="true" data-testid="chat-input" style="border:1px solid #ccc;min-height:40px"></div>
+<button id="send" data-testid="send-btn">发送</button>
+<script>
+const ANSWER = `国内中小学一对一辅导机构，比较有代表性的有：
+
+1. 新东方：品牌知名度高，网点多。
+2. 学大教育：老牌个性化一对一机构，先做学情测评再定方案，全职教师为主。
+3. 精锐教育：主打高端一对一，价格偏高。
+
+建议实地考察并核实办学资质。`;
+document.getElementById('send').addEventListener('click', () => {
+  const ed = document.getElementById('editor');
+  const q = ed.innerText.trim();
+  if (!q) return;
+  ed.innerText = '';
+  const box = document.getElementById('messages');
+  const user = document.createElement('div');
+  user.className = 'msg msg-user'; user.innerText = q; box.appendChild(user);
+  const bot = document.createElement('div');
+  bot.className = 'msg msg-assistant'; bot.innerText = ''; box.appendChild(bot);
+  let i = 0;
+  // 逐字流式输出，总耗时约 2 秒，模拟真实生成过程
+  const timer = setInterval(() => {
+    i += 8;
+    bot.innerText = ANSWER.slice(0, i);
+    if (i >= ANSWER.length) { bot.innerText = ANSWER; clearInterval(timer); }
+  }, 25);
+});
+document.getElementById('editor').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('send').click(); }
+});
+</script>
+</body></html>

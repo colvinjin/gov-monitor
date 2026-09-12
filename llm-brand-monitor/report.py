@@ -16,6 +16,11 @@
     正面率   = 情感判定为正面的回答数 / 提及学大的回答数（全部问题类型）
     SOV      = 学大被提及的回答数 / 各监测品牌被提及回答数之和（品类+对比问题）
     可见度指数 = 100 × (0.45×提及率 + 0.30×排名得分 + 0.25×情感归一)
+
+采集模式（mode）分开统计，绝不混算：
+    web  网页版/App 口径（联网检索）—— **默认基线**，真实用户走的就是这条
+    api  纯模型口径（不联网）—— 对照组，用来看提及率里有多少来自检索语料
+同一天两种模式都有数据时，头条指标取 web，api 作为对照单列。
 """
 
 import json
@@ -111,6 +116,8 @@ def metrics_for(records: List[Dict]) -> Dict:
         "negative_rate": _rate(labels["负面"], len(judged)),
         "avg_sentiment": avg_sentiment,
         "risk_count": len(risk),
+        "search_effective": len([r for r in ok if r.get("search_evidence")]),
+        "search_effective_rate": _rate(len([r for r in ok if r.get("search_evidence")]), len(ok)),
         "visibility_index": visibility_index(mention_rate, avg_rank_score, avg_sentiment,
                                              has_sentiment=bool(judged)),
     }
@@ -253,6 +260,28 @@ def load_history(days: int = HISTORY_DAYS) -> List[Dict]:
     return history
 
 
+def split_by_mode(records: List[Dict]) -> Dict[str, List[Dict]]:
+    out = {"web": [], "api": []}
+    for r in records:
+        out.setdefault(r.get("mode", "api"), []).append(r)
+    return out
+
+
+def channel_rows(records: List[Dict]) -> List[Dict]:
+    """按采集通道（接口 / 网页版 / App人工）汇总，用于看渠道间差值。"""
+    names = {"api": "接口(API)", "browser": "网页版(浏览器)", "manual": "App(人工)"}
+    rows = []
+    for ch in ("api", "browser", "manual"):
+        subset = [r for r in records if r.get("channel") == ch]
+        if not subset:
+            continue
+        m = metrics_for(subset)
+        m["channel"] = ch
+        m["channel_label"] = names[ch]
+        rows.append(m)
+    return rows
+
+
 def build(date: str = None) -> int:
     date = date or datetime.now().strftime("%Y-%m-%d")
     records = load_raw(date)
@@ -260,14 +289,31 @@ def build(date: str = None) -> int:
         print(f"❌ 没有找到 {date} 的采集数据（{RAW_DIR / (date + '.jsonl')}）")
         return 1
 
-    overall = metrics_for(records)
+    by_mode = split_by_mode(records)
+    # 基线取 web（网页版/App 口径）；当天只有 api 数据时退回 api 并标注
+    baseline_mode = "web" if by_mode.get("web") else "api"
+    baseline = by_mode[baseline_mode]
+
+    overall = metrics_for(baseline)
+    comparison = None
+    if by_mode.get("web") and by_mode.get("api"):
+        web_m, api_m = metrics_for(by_mode["web"]), metrics_for(by_mode["api"])
+        comparison = {
+            "web": web_m, "api": api_m,
+            "mention_gap": round(web_m["mention_rate"] - api_m["mention_rate"], 4),
+            "index_gap": round(web_m["visibility_index"] - api_m["visibility_index"], 1),
+        }
+
     providers = []
-    for key in sorted({r["provider"] for r in records}):
-        subset = [r for r in records if r["provider"] == key]
+    for key in sorted({(r["provider"], r.get("mode", "api")) for r in baseline}):
+        pkey, pmode = key
+        subset = [r for r in baseline if r["provider"] == pkey and r.get("mode", "api") == pmode]
         m = metrics_for(subset)
-        m["provider"] = key
+        m["provider"] = pkey
         m["provider_label"] = subset[0]["provider_label"]
         m["model"] = subset[0]["model"]
+        m["mode"] = pmode
+        m["channel"] = subset[0].get("channel", "api")
         providers.append(m)
     providers.sort(key=lambda x: -x["visibility_index"])
 
@@ -276,11 +322,15 @@ def build(date: str = None) -> int:
         "generatedAt": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "brand": BRAND.name,
         "competitors": [c.name for c in COMPETITORS],
+        "baselineMode": baseline_mode,
+        "modeCounts": {k: len(v) for k, v in by_mode.items() if v},
         "overall": overall,
+        "comparison": comparison,
+        "channels": channel_rows(baseline),
         "providers": providers,
-        "sov": share_of_voice(records),
-        "questions": by_question(records),
-        "highlights": collect_highlights(records),
+        "sov": share_of_voice(baseline),
+        "questions": by_question(baseline),
+        "highlights": collect_highlights(baseline),
     }
 
     DAILY_DIR.mkdir(parents=True, exist_ok=True)
@@ -311,10 +361,14 @@ def _pct(v) -> str:
     return "-" if v is None else f"{v:.1%}"
 
 
+MODE_DESC = {"web": "网页版/App 口径（联网检索）", "api": "纯模型口径（不联网）"}
+
+
 def print_console(p: Dict):
     o = p["overall"]
     print(f"\n{'='*64}")
     print(f"📊 {p['brand']} 大模型可见度日报 {p['date']}")
+    print(f"   基线口径: {MODE_DESC.get(p['baselineMode'], p['baselineMode'])}")
     print(f"{'='*64}")
     print(f"  可见度指数   {o['visibility_index']}/100")
     print(f"  提及率       {_pct(o['mention_rate'])}  ({o['mention_count']}/{o['category_answers']} 条品类问答)")
@@ -323,6 +377,16 @@ def print_console(p: Dict):
     print(f"  正面率       {_pct(o['positive_rate'])}  负面率 {_pct(o['negative_rate'])}  平均情感分 {o['avg_sentiment']}")
     if o["risk_count"]:
         print(f"  ⚠️ 风险表述   {o['risk_count']} 条")
+    if p.get("comparison"):
+        c = p["comparison"]
+        print(f"\n  联网 vs 不联网：提及率 {_pct(c['web']['mention_rate'])} vs "
+              f"{_pct(c['api']['mention_rate'])}（差 {c['mention_gap']*100:+.1f}pt），"
+              f"指数差 {c['index_gap']:+.1f}")
+    if len(p.get("channels", [])) > 1:
+        print(f"\n  分通道：")
+        for ch in p["channels"]:
+            print(f"    {ch['channel_label']:<16} 提及 {_pct(ch['mention_rate']):>6}  "
+                  f"首位 {_pct(ch['first_rate_in_mentioned']):>6}  指数 {ch['visibility_index']}")
     print(f"\n  分模型：")
     for m in p["providers"]:
         print(f"    {m['provider_label']:<18} 指数 {m['visibility_index']:>5}  "
@@ -337,6 +401,10 @@ def render_markdown(p: Dict) -> str:
         "",
         f"> 生成时间 {p['generatedAt']}｜有效回答 {o['ok']}/{o['calls']} 条"
         f"｜监测模型 {len(p['providers'])} 个",
+        "",
+        f"**基线口径：{MODE_DESC.get(p['baselineMode'], p['baselineMode'])}**"
+        f"（真实用户主要使用网页版和 App，因此以联网口径为准）"
+        f"｜联网实际生效 {_pct(o.get('search_effective_rate'))}",
         "",
         "## 一、核心指标",
         "",
@@ -354,14 +422,43 @@ def render_markdown(p: Dict) -> str:
         "",
         "## 二、分模型表现",
         "",
-        "| 模型 | 可见度指数 | 提及率 | 首位率 | 平均排名 | 正面率 | 失败调用 |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 模型 | 通道 | 可见度指数 | 提及率 | 首位率 | 平均排名 | 正面率 | 失败 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
+    ch_names = {"api": "接口", "browser": "网页版", "manual": "App人工"}
     for m in p["providers"]:
         lines.append(
-            f"| {m['provider_label']}（{m['model']}） | {m['visibility_index']} | "
+            f"| {m['provider_label']}（{m['model']}） | {ch_names.get(m.get('channel'), '-')} | "
+            f"{m['visibility_index']} | "
             f"{_pct(m['mention_rate'])} | {_pct(m['first_rate_in_mentioned'])} | "
             f"{m['avg_rank'] or '-'} | {_pct(m['positive_rate'])} | {m['fail']} |")
+
+    if p.get("comparison"):
+        c = p["comparison"]
+        lines += ["", "## 二之二、联网 vs 不联网对照", "",
+                  "| 口径 | 提及率 | 首位率 | 平均排名 | 可见度指数 |",
+                  "| --- | --- | --- | --- | --- |",
+                  f"| 网页版/App（联网） | {_pct(c['web']['mention_rate'])} | "
+                  f"{_pct(c['web']['first_rate_in_mentioned'])} | {c['web']['avg_rank'] or '-'} | "
+                  f"{c['web']['visibility_index']} |",
+                  f"| 纯模型（不联网） | {_pct(c['api']['mention_rate'])} | "
+                  f"{_pct(c['api']['first_rate_in_mentioned'])} | {c['api']['avg_rank'] or '-'} | "
+                  f"{c['api']['visibility_index']} |",
+                  "",
+                  f"提及率差 **{c['mention_gap']*100:+.1f}pt**，可见度指数差 **{c['index_gap']:+.1f}**。"
+                  f"差值为正说明联网检索帮学大加了分（检索语料里有学大），"
+                  f"差值为负说明模型自身知识里学大更靠前、而检索结果把竞品带了上来。", ""]
+
+    if len(p.get("channels", [])) > 1:
+        lines += ["", "## 二之三、分采集通道", "",
+                  "| 通道 | 回答数 | 提及率 | 首位率 | 正面率 | 可见度指数 |",
+                  "| --- | --- | --- | --- | --- | --- |"]
+        for ch in p["channels"]:
+            lines.append(f"| {ch['channel_label']} | {ch['ok']} | {_pct(ch['mention_rate'])} | "
+                         f"{_pct(ch['first_rate_in_mentioned'])} | {_pct(ch['positive_rate'])} | "
+                         f"{ch['visibility_index']} |")
+        lines += ["", "> 接口与网页版/App 的差值就是校准系数：可以用接口做高频监测，"
+                  "定期用网页版/App 采一批做校准。", ""]
 
     lines += ["", "## 三、竞品声量份额（SOV）", "",
               "| 品牌 | 被提及回答数 | 提及率 | SOV | 平均排名 |",

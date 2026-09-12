@@ -31,6 +31,45 @@ class ChatResult:
     error: str = ""
     latency_ms: int = 0
     usage: Dict = field(default_factory=dict)
+    search_requested: bool = False   # 请求里开了联网检索
+    search_evidence: bool = False    # 响应里确实带回了检索结果
+    citations: int = 0               # 引用条数
+
+
+# 各家在响应里回传检索结果的字段名不统一，能命中任意一个就算"确实检索了"
+CITATION_KEYS = ("search_results", "web_search", "search_info", "references",
+                 "citations", "doc_refs", "search_result")
+
+
+def _collect_citations(data: Dict) -> Tuple[bool, int]:
+    """扫描响应，判断本次回答是否真的带了联网检索结果。
+
+    只声明"请求里开了检索"是不够的——各家字段会变、套餐也可能不支持，
+    所以额外记录响应里有没有真的回传引用，报表里能看到实际生效比例。
+    """
+    found, count = False, 0
+
+    def walk(node, depth=0):
+        nonlocal found, count
+        if depth > 4:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in CITATION_KEYS and v:
+                    found = True
+                    if isinstance(v, list):
+                        count += len(v)
+                    elif isinstance(v, dict) and isinstance(v.get("search_results"), list):
+                        count += len(v["search_results"])
+                    else:
+                        count += 1
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node[:20]:
+                walk(v, depth + 1)
+
+    walk(data)
+    return found, count
 
 
 class LLMClient:
@@ -49,12 +88,14 @@ class LLMClient:
     async def chat(self, provider: Provider, prompt: str,
                    temperature: float = TEMPERATURE,
                    max_tokens: int = MAX_TOKENS,
-                   system: str = SYSTEM_PROMPT) -> ChatResult:
+                   system: str = SYSTEM_PROMPT,
+                   mode: str = "web") -> ChatResult:
         if provider.key == "mock":
             return mock_answer(prompt)
 
+        plan = provider.resolve(mode)
         payload = {
-            "model": provider.model,
+            "model": plan["model"],
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
@@ -62,12 +103,11 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        payload.update(provider.extra_body or {})
+        payload.update(plan["body"])
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
         }
-        url = f"{provider.base_url.rstrip('/')}/chat/completions"
 
         last_err = ""
         async with self._sem:
@@ -75,14 +115,18 @@ class LLMClient:
                 started = time.time()
                 try:
                     resp = await self._client.post(
-                        url, headers=headers, json=payload, timeout=provider.timeout
+                        plan["url"], headers=headers, json=payload, timeout=provider.timeout
                     )
                     latency = int((time.time() - started) * 1000)
                     if resp.status_code == 200:
-                        text, usage = _parse_openai_response(resp.json())
+                        data = resp.json()
+                        text, usage = _parse_openai_response(data)
+                        has_cite, n_cite = _collect_citations(data)
                         if text:
-                            return ChatResult(provider.key, provider.model, True,
-                                              text=text, latency_ms=latency, usage=usage)
+                            return ChatResult(provider.key, plan["model"], True,
+                                              text=text, latency_ms=latency, usage=usage,
+                                              search_requested=plan["search_requested"],
+                                              search_evidence=has_cite, citations=n_cite)
                         last_err = "响应中未取到正文"
                     else:
                         last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -94,7 +138,8 @@ class LLMClient:
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(2 ** attempt + random.random())
 
-        return ChatResult(provider.key, provider.model, False, error=last_err)
+        return ChatResult(provider.key, plan["model"], False, error=last_err,
+                          search_requested=plan["search_requested"])
 
 
 def _parse_openai_response(data: Dict) -> Tuple[str, Dict]:
@@ -171,21 +216,36 @@ MOCK_PROVIDER = Provider(
 
 
 async def _selftest():
-    """python llm_client.py 会对每个已配置的模型打一次连通性测试。"""
-    from config import available_providers
+    """python llm_client.py 会对每个已配置的模型打一次连通性 + 联网检索测试。"""
+    from config import DEFAULT_MODE, available_providers
 
     providers = available_providers()
     if not providers:
         print("未检测到任何已配置的模型 API Key，请参考 .env.example 配置")
         return
+
+    print(f"模式: {DEFAULT_MODE}（web=尽量开联网检索，贴近网页版/App）\n")
+    probe = "现在国内有哪些知名的中小学一对一辅导机构？请简要列举。"
     async with LLMClient(concurrency=len(providers)) as client:
         results = await asyncio.gather(*[
-            client.chat(p, "你好，请用一句话介绍你自己。", max_tokens=100) for p in providers
+            client.chat(p, probe, max_tokens=300, mode=DEFAULT_MODE) for p in providers
         ])
+    print(f"{'模型':<18}{'状态':<6}{'耗时':>8}  {'联网':<12}摘要")
     for p, r in zip(providers, results):
         flag = "✅" if r.ok else "❌"
-        detail = (r.text[:40].replace("\n", " ") if r.ok else r.error[:80])
-        print(f"{flag} {p.label:<16} {p.model:<28} {r.latency_ms:>6}ms  {detail}")
+        if not p.supports_api_search and p.key != "doubao":
+            web = "接口不支持"
+        elif r.search_evidence:
+            web = f"已生效({r.citations})"
+        elif r.search_requested:
+            web = "已请求未回引用"
+        else:
+            web = "未开启"
+        detail = (r.text[:30].replace("\n", " ") if r.ok else r.error[:70])
+        print(f"{p.label:<18}{flag:<6}{r.latency_ms:>6}ms  {web:<12}{detail}")
+
+    print("\n提示：接口层开不了联网的模型（DeepSeek / Kimi / MiniMax 等），"
+          "请用 browser_channel.py 或 import_manual.py 采集网页版结果。")
 
 
 if __name__ == "__main__":
