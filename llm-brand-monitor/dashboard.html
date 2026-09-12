@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学大教育 · 大模型可见度看板</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --ink:#1b1d21; --muted:#6b7280; --line:#e6e8ec;
+    --self:#2f6df6; --rival:#b9c0cc; --pos:#16a34a; --neg:#dc2626; --warn:#d97706;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 60px}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;margin-bottom:20px}
+  h1{font-size:21px;margin:0}
+  .meta{color:var(--muted);font-size:13px}
+  .grid{display:grid;gap:14px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .kpi .label{font-size:13px;color:var(--muted)}
+  .kpi .value{font-size:30px;font-weight:650;margin:6px 0 2px;letter-spacing:-.5px}
+  .kpi .sub{font-size:12px;color:var(--muted)}
+  h2{font-size:15px;margin:26px 0 12px;display:flex;align-items:center;gap:8px}
+  h2 small{font-weight:400;color:var(--muted);font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:500;font-size:12px}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .bar{height:8px;border-radius:5px;background:var(--rival);display:inline-block;vertical-align:middle}
+  .bar.self{background:var(--self)}
+  .tag{display:inline-block;padding:3px 9px;border-radius:99px;font-size:12px;margin:3px 5px 3px 0;
+       background:#eef2ff;color:#3730a3}
+  .tag.neg{background:#fef2f2;color:#b91c1c}
+  .tag.pos{background:#ecfdf5;color:#047857}
+  .risk{border-left:3px solid var(--warn);padding:8px 12px;margin:8px 0;background:#fffbeb;
+        border-radius:0 8px 8px 0;font-size:13px;line-height:1.6}
+  .zero{color:var(--neg);font-weight:600}
+  .scroll{overflow-x:auto}
+  .empty{color:var(--muted);font-size:13px}
+  footer{margin-top:32px;color:var(--muted);font-size:12px;line-height:1.8}
+  @media (max-width:600px){ .kpi .value{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>学大教育 · 大模型可见度看板</h1>
+    <span class="meta" id="meta">加载中…</span>
+  </header>
+  <div id="app"></div>
+  <footer>
+    指标口径：提及率 = 品类推荐类问题中提到学大的回答占比；首位率 = 提及回答中学大排第一的占比；
+    正面率 = 提及学大的回答中情感判定为正面的占比；可见度指数 = 提及率×45% + 排名得分×30% + 情感×25%。<br>
+    本页需通过 HTTP 访问才能读取 web_data.json：<code>python3 -m http.server 8080</code> 后打开
+    <code>http://localhost:8080/dashboard.html</code>。
+  </footer>
+</div>
+
+<script>
+const pct = v => (v === null || v === undefined) ? '-' : (v * 100).toFixed(1) + '%';
+const num = v => (v === null || v === undefined) ? '-' : v;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function kpiCards(o) {
+  const items = [
+    ['可见度指数', o.visibility_index, `满分 100`],
+    ['提及率', pct(o.mention_rate), `${o.mention_count}/${o.category_answers} 条品类问答`],
+    ['首位率', pct(o.first_rate_in_mentioned), `全量口径 ${pct(o.first_rate_overall)}｜平均排名 ${num(o.avg_rank)}`],
+    ['正面率', pct(o.positive_rate), `负面 ${pct(o.negative_rate)}｜情感分 ${o.avg_sentiment}`],
+  ];
+  return `<div class="grid kpis">${items.map(([l, v, s]) => `
+    <div class="card kpi"><div class="label">${l}</div>
+      <div class="value">${v}</div><div class="sub">${s}</div></div>`).join('')}</div>`;
+}
+
+function lineChart(history) {
+  const pts = history.filter(h => h.has_data);
+  if (pts.length < 2) return `<div class="card empty">趋势需要至少 2 天数据，继续每日运行即可累积。</div>`;
+  const W = 1080, H = 220, P = 34;
+  const series = [
+    ['提及率', 'mention_rate', '#2f6df6'],
+    ['首位率', 'first_rate', '#16a34a'],
+    ['正面率', 'positive_rate', '#d97706'],
+  ];
+  const x = i => P + i * (W - 2 * P) / Math.max(1, pts.length - 1);
+  const y = v => H - P - v * (H - 2 * P);
+  const grid = [0, .25, .5, .75, 1].map(v =>
+    `<line x1="${P}" y1="${y(v)}" x2="${W - P}" y2="${y(v)}" stroke="#eceef2"/>
+     <text x="6" y="${y(v) + 4}" font-size="11" fill="#9aa1ad">${v * 100}%</text>`).join('');
+  const lines = series.map(([, key, color]) =>
+    `<polyline fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"
+      points="${pts.map((p, i) => `${x(i)},${y(p[key] || 0)}`).join(' ')}"/>` +
+    pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p[key] || 0)}" r="3" fill="${color}"/>`).join('')
+  ).join('');
+  const labels = pts.map((p, i) =>
+    `<text x="${x(i)}" y="${H - 10}" font-size="11" fill="#9aa1ad" text-anchor="middle">${p.date.slice(5)}</text>`).join('');
+  const legend = series.map(([name, , color]) =>
+    `<span class="tag" style="background:${color}1a;color:${color}">${name}</span>`).join('');
+  return `<div class="card">${legend}
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${grid}${lines}${labels}</svg></div>`;
+}
+
+function providerTable(rows) {
+  if (!rows.length) return '';
+  const max = Math.max(...rows.map(r => r.visibility_index), 1);
+  return `<div class="card scroll"><table>
+    <thead><tr><th>模型</th><th class="num">可见度指数</th><th></th>
+      <th class="num">提及率</th><th class="num">首位率</th><th class="num">平均排名</th>
+      <th class="num">正面率</th><th class="num">失败</th></tr></thead><tbody>
+    ${rows.map(r => `<tr>
+      <td>${esc(r.provider_label)}<br><span class="meta">${esc(r.model)}</span></td>
+      <td class="num">${r.visibility_index}</td>
+      <td style="width:130px"><span class="bar self" style="width:${(r.visibility_index / max * 110).toFixed(0)}px"></span></td>
+      <td class="num">${pct(r.mention_rate)}</td>
+      <td class="num">${pct(r.first_rate_in_mentioned)}</td>
+      <td class="num">${num(r.avg_rank)}</td>
+      <td class="num">${pct(r.positive_rate)}</td>
+      <td class="num">${r.fail || 0}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function sovChart(rows) {
+  if (!rows.length) return '<div class="card empty">暂无数据</div>';
+  const max = Math.max(...rows.map(r => r.sov), 0.01);
+  return `<div class="card scroll"><table><tbody>
+    ${rows.map(r => `<tr>
+      <td style="width:120px">${esc(r.brand)}${r.is_self ? ' ⭐' : ''}</td>
+      <td><span class="bar ${r.is_self ? 'self' : ''}" style="width:${(r.sov / max * 100).toFixed(1)}%"></span></td>
+      <td class="num" style="width:70px">${pct(r.sov)}</td>
+      <td class="num" style="width:90px">均名次 ${num(r.avg_rank)}</td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+function highlights(h) {
+  const pos = (h.top_positive_points || []).map(([k, v]) => `<span class="tag pos">${esc(k)} ×${v}</span>`).join('');
+  const neg = (h.top_negative_points || []).map(([k, v]) => `<span class="tag neg">${esc(k)} ×${v}</span>`).join('');
+  const risks = (h.risks || []).map(r =>
+    `<div class="risk"><b>${esc(r.provider)}</b>｜${esc(r.question)}<br>${esc(r.snippet)}</div>`).join('');
+  return `<div class="card">
+    <div style="margin-bottom:10px"><b style="font-size:13px">被夸的点</b><br>${pos || '<span class="empty">暂无</span>'}</div>
+    <div><b style="font-size:13px">被质疑的点</b><br>${neg || '<span class="empty">暂无</span>'}</div>
+    ${risks ? `<div style="margin-top:14px"><b style="font-size:13px">⚠️ 风险表述</b>${risks}</div>` : ''}
+  </div>`;
+}
+
+function questionTable(rows) {
+  const cat = rows.filter(r => r.type === 'category');
+  if (!cat.length) return '';
+  return `<div class="card scroll"><table>
+    <thead><tr><th>问题</th><th>场景</th><th class="num">采样</th><th class="num">提及率</th><th class="num">首位次数</th></tr></thead>
+    <tbody>${cat.map(r => `<tr>
+      <td style="white-space:normal;max-width:520px">${esc(r.question)}</td>
+      <td>${esc(r.scene)}</td>
+      <td class="num">${r.answers}</td>
+      <td class="num ${(r.mention_rate || 0) === 0 ? 'zero' : ''}">${pct(r.mention_rate)}</td>
+      <td class="num">${r.first_count}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+fetch('web_data.json?' + Date.now())
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('meta').textContent =
+      `${d.date}｜生成于 ${d.generatedAt}｜有效回答 ${d.overall.ok}/${d.overall.calls} 条｜模型 ${d.providers.length} 个`;
+    document.getElementById('app').innerHTML = [
+      kpiCards(d.overall),
+      '<h2>趋势 <small>近 14 天</small></h2>', lineChart(d.history || []),
+      '<h2>分模型表现</h2>', providerTable(d.providers),
+      '<h2>竞品声量份额 SOV <small>品类 + 对比类问题</small></h2>', sovChart(d.sov),
+      '<h2>口碑归因</h2>', highlights(d.highlights || {}),
+      '<h2>问题下钻 <small>提及率为 0 的问题即内容优化靶子</small></h2>', questionTable(d.questions || []),
+    ].join('');
+  })
+  .catch(e => {
+    document.getElementById('meta').textContent = '加载失败';
+    document.getElementById('app').innerHTML =
+      `<div class="card">读取 web_data.json 失败：${esc(e.message)}。<br>
+       请先运行 <code>python3 monitor.py --dry-run</code> 生成数据，并通过
+       <code>python3 -m http.server 8080</code> 访问本页（直接双击打开会被浏览器 CORS 拦截）。</div>`;
+  });
+</script>
+</body>
+</html>
